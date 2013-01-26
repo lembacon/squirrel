@@ -23,6 +23,8 @@ typedef struct {
   CGFloat ascent;
   CGFloat descent;
   CGFloat leading;
+
+  CGSize offset;
 } SquirrelCandidate;
 
 @interface SquirrelView : NSView
@@ -30,7 +32,6 @@ typedef struct {
   SquirrelCandidate *_candidates;
   NSUInteger _candidateCount;
   NSSize _contentSize;
-  CGFloat _descent;
   
   NSColor *_backgroundColor;
   CGFloat _cornerRadius;
@@ -40,7 +41,10 @@ typedef struct {
   
   CGFloat _horizontalSpacing;
   CGFloat _verticalSpacing;
+  CGFloat _maxAscent;
+  CGFloat _maxDescent;
   CGFloat _maxLeading;
+  CGFloat _concreteLineHeight;
 }
 
 @property (nonatomic, retain) NSColor *backgroundColor;
@@ -128,7 +132,10 @@ typedef struct {
     _verticalSpacing = round((descent + leading) * verticalMultiplier);
   }
 
+  _maxAscent = CTFontGetAscent((CTFontRef)font) * 1.18;
+  _maxDescent = CTFontGetDescent((CTFontRef)font) * 1.33;
   _maxLeading = CTFontGetLeading((CTFontRef)font);
+  _concreteLineHeight = _maxAscent + _maxDescent + _maxLeading;
 }
 
 -(void)setContents:(NSArray *)contents
@@ -144,7 +151,6 @@ typedef struct {
     _candidates = NULL;
     _candidateCount = 0;
     _contentSize = NSZeroSize;
-    _descent = 0.0;
   }
   
   if (contents == nil || [contents count] == 0) {
@@ -171,7 +177,9 @@ typedef struct {
     
     _candidates[i].line = CTLineCreateWithAttributedString((CFAttributedStringRef)attributedString);
     _candidates[i].width = CTLineGetTypographicBounds(_candidates[i].line, &_candidates[i].ascent, &_candidates[i].descent, &_candidates[i].leading);
-    _candidates[i].leading = MIN(_maxLeading, _candidates[i].leading); // work around abnormal leading caused by U+30FB 
+    _candidates[i].ascent = MIN(_maxAscent, _candidates[i].ascent);
+    _candidates[i].descent = MIN(_maxDescent, _candidates[i].descent);
+    _candidates[i].leading = MIN(_maxLeading, _candidates[i].leading); // work around abnormal leading caused by U+30FB
     _candidates[i].height = _candidates[i].ascent + _candidates[i].descent + _candidates[i].leading;
 
     _candidates[i].ascent = round(_candidates[i].ascent);
@@ -182,14 +190,14 @@ typedef struct {
 
     if (_horizontal) {
       _contentSize.width += _candidates[i].width;
-      _contentSize.height = MAX(_contentSize.height, _candidates[i].height);
-      
-      _descent = MAX(_descent, _candidates[i].descent);
+      _contentSize.height = _concreteLineHeight;
     }
     else {
       _contentSize.width = MAX(_contentSize.width, _candidates[i].width);
-      _contentSize.height += _candidates[i].height;
+      _contentSize.height += _concreteLineHeight;
     }
+
+    _candidates[i].offset.height = round((_concreteLineHeight - _candidates[i].height) / 2.0);
     
     if (bgColor != nil) {
       CGFloat components[4];
@@ -211,7 +219,7 @@ typedef struct {
       else {
         endOffset = _candidates[i].width;
       }
-      
+
       _candidates[i].bgRect = CGRectMake(floor(startOffset), -_candidates[i].descent, ceil(endOffset - startOffset), _candidates[i].height);
     }
   }
@@ -239,20 +247,24 @@ typedef struct {
   CGContextSaveGState(ctx);
   CGContextSetTextMatrix(ctx, CGAffineTransformIdentity);
   
-  CGSize offset = CGSizeMake([self borderWidth], [self borderHeight]);
-  NSInteger i;
+  CGSize offset = CGSizeMake([self borderWidth], NSHeight([self bounds]) - [self borderHeight]);
+  NSUInteger i;
   
   if (_horizontal) {
     for (i = 0; i < _candidateCount; i++) {
       CGFloat xOffset = offset.width;
-      CGFloat yOffset = offset.height + _descent;
+      CGFloat yOffset = offset.height - _candidates[i].offset.height - _candidates[i].ascent;
       
       offset.width += _candidates[i].width;
       offset.width += _horizontalSpacing;
       
       if (_candidates[i].bgColor != NULL) {
+        CGRect bgRect = CGRectOffset(_candidates[i].bgRect, xOffset, yOffset);
+        bgRect.origin.y = offset.height - _concreteLineHeight;
+        bgRect.size.height = _concreteLineHeight;
+        
         CGContextSetFillColorWithColor(ctx, _candidates[i].bgColor);
-        CGContextFillRect(ctx, CGRectOffset(_candidates[i].bgRect, xOffset, yOffset));
+        CGContextFillRect(ctx, bgRect);
       }
       
       CGContextSetTextPosition(ctx, xOffset, yOffset);
@@ -260,20 +272,20 @@ typedef struct {
     }
   }
   else {
-    offset.height = NSHeight([self bounds]) - offset.height;
-
     for (i = 0; i < _candidateCount; i++) {
-      offset.height -= _candidates[i].ascent;
-
       CGFloat xOffset = offset.width;
-      CGFloat yOffset = offset.height;
+      CGFloat yOffset = offset.height - _candidates[i].offset.height - _candidates[i].ascent;
 
-      offset.height -= _candidates[i].descent + _candidates[i].leading;
+      offset.height -= _concreteLineHeight;
       offset.height -= _verticalSpacing;
 
       if (_candidates[i].bgColor != NULL) {
+        CGRect bgRect = CGRectOffset(_candidates[i].bgRect, xOffset, yOffset);
+        bgRect.origin.y = offset.height + _verticalSpacing;
+        bgRect.size.height = _concreteLineHeight;
+        
         CGContextSetFillColorWithColor(ctx, _candidates[i].bgColor);
-        CGContextFillRect(ctx, CGRectOffset(_candidates[i].bgRect, xOffset, yOffset));
+        CGContextFillRect(ctx, bgRect);
       }
 
       CGContextSetTextPosition(ctx, xOffset, yOffset);
